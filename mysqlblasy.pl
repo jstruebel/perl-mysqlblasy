@@ -60,6 +60,7 @@ Allowed config keys and values:
    keep                = number of backup files to keep in backupdir
    use syslog          = yes or no or 1 or 0 (default yes)
    tar                 = see below
+   create single file  = yes or no or 1 or 0 (default yes)
 
 Some of these configuration values may require special attention:
 'compression tool' and 'tar' can be specified with their absolute filenames or
@@ -132,6 +133,9 @@ use strict;
 use warnings;
 use File::Basename;    # should be in Perl base install
 use File::Spec;        # should be in Perl base install
+use IO::Compress::Gzip;# should be in Perl base install
+use IO::Compress::Bzip2;# should be in Perl base install
+use IO::Compress::Zip; # should be in Perl base install
 
 use vars qw($Me $_cwd $_workDir $_hostDir $_globalCfg $_glb);
 
@@ -1315,6 +1319,22 @@ sub getPreferences
 					$cfg->{syslog} = 0;    # false
 				}
 			}
+			elsif (/^create single file = (\S+)$/i)
+			{
+
+				#
+				$cfg->{single} = $1;
+				if ( !( $cfg->{single} =~ /^(0|1|yes|no|y|n|true|false|t|f)$/i )
+				  )
+				{
+					logWarn( "Invalid 'create single file' given:", $cfg->{single} );
+					$cfg->{single} = undef;
+				}
+				elsif ( $cfg->{single} =~ /^(0|no|n|false|f)$/i )
+				{
+					$cfg->{single} = 0;    # false
+				}
+			}
 			else
 			{
 
@@ -1328,6 +1348,7 @@ sub getPreferences
 	$cfg->{compression} = 1 unless defined $cfg->{compression};
 	$cfg->{loglevel}    = 2 unless defined $cfg->{loglevel};
 	$cfg->{syslog}      = 1 unless defined $cfg->{syslog};
+	$cfg->{single}      = 1 unless defined $cfg->{single};
 
 	return $cfg;
 }
@@ -1797,6 +1818,64 @@ sub makeTar
 	}
 }
 
+=item makeDir( [files], workdir, dirname)
+
+makeDir() will create a directory with all of the files dumped.
+If use compression is true then each file will be compressed individually.
+Returns undef on failure or the created directory on success.
+
+=cut
+
+sub makeDir
+{
+	my $files       = shift;
+	my $workdir     = shift;
+	my $dirname = shift;
+
+	logDebug("files: @{$files}");
+	logDebug("workdir: $workdir");
+	logDebug("dirname: $dirname");
+
+	chdir $workdir || graceful_die("Could not change to $workdir: $!");
+
+	foreach my $file ( @{$files} )
+	{
+		$file = File::Basename::basename($file);
+        my $filename = File::Spec->catfile( $dirname, $file );
+	    logDebug("filename: $filename");
+
+    	my $compresstool = undef;
+    	if ( getConfigValue('compression') )
+    	{    # compression was specified!
+    		$compresstool = getConfigValue('compressiontool');
+        	if ( $compresstool =~ /gzip$/ )
+        	{
+        		logInfo( "Will use", $compresstool, "as the compression tool" );
+            	$filename .= ".gz";
+                my $status = IO::Compress::Gzip::gzip $file => $filename or graceful_die("Gzip Error: $IO::Compress::Gzip::GzipError");
+        	}
+        	elsif ( $compresstool =~ /bzip2$/ )
+        	{
+        		logInfo( "Will use", $compresstool, "as the compression tool" );
+            	$filename .= ".bz2";
+                my $status = IO::Compress::Bzip2::bzip2 $file => $filename or graceful_die("Bzip2 Error: $IO::Compress::Bzip2::Bzip2Error");
+        	}
+        	elsif ( $compresstool =~ /zip$/ )
+        	{
+        		logInfo( "Will use", $compresstool, "as the compression tool" );
+            	$filename .= ".zip";
+                my $status = IO::Compress::Zip::zip $file => $filename or graceful_die("Zip Error: $IO::Compress::Zip::ZipError");
+        	}
+    	}
+        else
+        {
+            File::Copy ( $file, $filename ) or graceful_die("Error Copying Files: $!");
+        }
+	}
+
+	return $dirname;
+}
+
 =item purgeOldFiles(directory, number_of_files_to_keep)
 
 purgeOldFiles() will delete all files older than the 'number_of_files_to_keep'
@@ -2121,57 +2200,87 @@ foreach my $d ( @{$backupdbs} )
 
 my @parts = File::Spec->splitdir( hostDir() );
 
-if ( $^O !~ /MSWin32/ )
+if ( getConfigValue('single') )
 {
-	my $tarname = $parts[-1] . ".tar";
-	logDebug( 'using tar filename:', $tarname );
-	if ( -e getConfigValue('backupdir') . $tarname )
-	{
-		graceful_die( "Backup with filename "
-			  . File::Spec->catfile( getConfigValue('backupdir'), $tarname )
-			  . " already exists!" );
-	}
-	if (
-		my $createdtar = makeTar(
-			hostDir(), $dumps, workDir(),
-			File::Spec->catfile( getConfigValue('backupdir'), $tarname )
-		)
-	  )
-	{    # problem creating tar
-		logInfo( "Successfully tarred dump(s) to", $createdtar );
-	}
-	else
-	{
-		logWarn( "Will unlink the unsuccessfully created tar file:", $tarname );
-		unlink $tarname;
-		graceful_die("Tar file unlinked. Quitting.");
-	}
+    if ( $^O !~ /MSWin32/ )
+    {
+    	my $tarname = $parts[-1] . ".tar";
+    	logDebug( 'using tar filename:', $tarname );
+    	if ( -e getConfigValue('backupdir') . $tarname )
+    	{
+    		graceful_die( "Backup with filename "
+    			  . File::Spec->catfile( getConfigValue('backupdir'), $tarname )
+    			  . " already exists!" );
+    	}
+    	if (
+    		my $createdtar = makeTar(
+    			hostDir(), $dumps, workDir(),
+    			File::Spec->catfile( getConfigValue('backupdir'), $tarname )
+    		)
+    	  )
+    	{    # problem creating tar
+    		logInfo( "Successfully tarred dump(s) to", $createdtar );
+    	}
+    	else
+    	{
+    		logWarn( "Will unlink the unsuccessfully created tar file:", $tarname );
+    		unlink $tarname;
+    		graceful_die("Tar file unlinked. Quitting.");
+    	}
+    }
+    else
+    {
+    	my $zipname = $parts[-1] . ".zip";
+    	logDebug( 'using zip filename:', $zipname );
+    	if ( -e getConfigValue('backupdir') . $zipname )
+    	{
+    		graceful_die( "Backup with filename "
+    			  . File::Spec->catfile( getConfigValue('backupdir'), $zipname )
+    			  . " already exists!" );
+    	}
+    	if (
+    		my $createdzip = makeNativeZip(
+    			$dumps, hostDir(),
+    			File::Spec->catfile( getConfigValue('backupdir'), $zipname )
+    		)
+    	  )
+    	{    # problem creating tar
+    		logInfo( "Successfully zipped dump(s) to", $createdzip );
+    	}
+    	else
+    	{
+    		logWarn( "Will unlink the unsuccessfully created zip file:", $zipname );
+    		unlink $zipname;
+    		graceful_die("Zip file unlinked. Quitting.");
+    	}
+    }
 }
 else
 {
-	my $zipname = $parts[-1] . ".zip";
-	logDebug( 'using zip filename:', $zipname );
-	if ( -e getConfigValue('backupdir') . $zipname )
-	{
-		graceful_die( "Backup with filename "
-			  . File::Spec->catfile( getConfigValue('backupdir'), $zipname )
-			  . " already exists!" );
-	}
-	if (
-		my $createdzip = makeNativeZip(
+    my $dirname = $parts[-1];
+    logDebug( 'using directory name:', $dirname );
+    if ( !-d getConfigValue('backupdir') . $dirname )
+    {
+    	mkdir getConfigValue('backupdir') . $dirname or
+            graceful_die( "Could not create directory "
+                . File::Spec->catfile( getConfigValue('backupdir'), $dirname )
+                . "!" );
+    }
+    if (
+        my $createddir = makeDir(
 			$dumps, hostDir(),
-			File::Spec->catfile( getConfigValue('backupdir'), $zipname )
+			File::Spec->catfile( getConfigValue('backupdir'), $dirname )
 		)
 	  )
 	{    # problem creating tar
-		logInfo( "Successfully zipped dump(s) to", $createdzip );
+		logInfo( "Successfully created dump(s) in", $createddir );
 	}
 	else
 	{
-		logWarn( "Will unlink the unsuccessfully created zip file:", $zipname );
-		unlink $zipname;
-		graceful_die("Zip file unlinked. Quitting.");
+		logWarn( "Error occurred when creating dump files in directory:", $dirname );
+		graceful_die("Quitting.");
 	}
+
 }
 
 unless (

@@ -2025,7 +2025,7 @@ sub purgeOldFiles
 	        logDebug( "$dir: total of", scalar(@files), "files" );
 	        logDebug( "the files:", @{ [ map { $_->[0] } @files ] } );
 
-            foreach (@files)
+            foreach (@{ [ map { $_->[0] } @files ] })
             {
 		        logDebug("trying to remove $_");
 		        my $r = ( !-e $_ ) * 2 || unlink $_;

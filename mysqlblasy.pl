@@ -1876,7 +1876,7 @@ sub makeDir
 	return $dirname;
 }
 
-=item purgeOldFiles(directory, number_of_files_to_keep)
+=item purgeOldFiles(directory, number_of_files_to_keep, single_files)
 
 purgeOldFiles() will delete all files older than the 'number_of_files_to_keep'
 files in the specified 'directory'.
@@ -1888,6 +1888,7 @@ sub purgeOldFiles
 	my $dir = shift
 	  || graceful_die("need to give a directory for purgeOldFiles!");
 	my $keep = shift;
+    my $single = shift;
 
 	if ( defined $keep && !( $keep =~ /^\d+$/ ) )
 	{
@@ -1905,6 +1906,11 @@ sub purgeOldFiles
 "Number of files to keep is zero? No backup will be there! Check your config!"
 		);
 		$keep = 0;
+	}
+	if ( !defined $single )
+	{
+		logInfo("Assuming backups are a single file per run");
+		$single = 1;    # hardcoded default
 	}
 
 	# Must be a directory.
@@ -1942,8 +1948,16 @@ sub purgeOldFiles
 	foreach ( readdir(DIR) )
 	{
 		next if /^\./;
-		next unless -f File::Spec->catfile( $dir, $_ );
-		push( @files, [ File::Spec->catfile( $dir, $_ ), -M _ ] );
+        if ($single)
+        {
+		    next unless -f File::Spec->catfile( $dir, $_ );
+		    push( @files, [ File::Spec->catfile( $dir, $_ ), -M _ ] );
+        }
+        else
+        {
+		    next unless -d File::Spec->catfile( $dir, $_ );
+		    push( @files, [ File::Spec->catfile( $dir, $_ ), -M _ ] );
+        }
 	}
 	closedir(DIR);
 
@@ -1979,18 +1993,65 @@ sub purgeOldFiles
 	foreach (@sorted)
 	{
 		logDebug("trying to remove $_");
-		my $r = ( !-e $_ ) * 2 || unlink $_;
+        if ($single)
+        {
+		    my $r = ( !-e $_ ) * 2 || unlink $_;
 
 # now, result has 3 possible values: 0 on error, 1 on success, 2 on 'file was inexistant from the beginning'
-		logNotice("File $_ could not be removed, it was already gone.")
-		  if $r == 2;
-		if ( $r == 0 )
-		{
-			logErr("Could not remove $_: $!");
+		    logNotice("File $_ could not be removed, it was already gone.")
+		      if $r == 2;
+		    if ( $r == 0 )
+		    {
+			    logErr("Could not remove $_: $!");
 
 # we do not fail, because we want to avoid disk-overflows when the admin has gone on vacation...
 # so we continue trying the rest of the files...
-		}
+		    }
+        }
+        else
+        {
+            my $dir = $_;
+	        opendir( DIR, $dir )
+	          or logErr("dir: $!");    # shouldn't happen -- we've checked!
+	        my @files;
+	        foreach ( readdir(DIR) )
+	        {
+	        	next if /^\./;
+	        	next unless -f File::Spec->catfile( $dir, $_ );
+	        	push( @files, [ File::Spec->catfile( $dir, $_ ), -M _ ] );
+	        }
+	        closedir(DIR);
+
+	        logDebug( "$dir: total of", scalar(@files), "files" );
+	        logDebug( "the files:", @{ [ map { $_->[0] } @files ] } );
+
+            foreach (@files)
+            {
+		        logDebug("trying to remove $_");
+		        my $r = ( !-e $_ ) * 2 || unlink $_;
+
+# now, result has 3 possible values: 0 on error, 1 on success, 2 on 'file was inexistant from the beginning'
+		        logNotice("File $_ could not be removed, it was already gone.")
+		          if $r == 2;
+		        if ( $r == 0 )
+		        {
+			        logErr("Could not remove $_: $!");
+
+# we do not fail, because we want to avoid disk-overflows when the admin has gone on vacation...
+# so we continue trying the rest of the files...
+		        }
+            }
+
+            my $r = rmdir $dir;
+		    if ( $r == 0 )
+		    {
+			    logErr("Could not remove $_: $!");
+
+# we do not fail, because we want to avoid disk-overflows when the admin has gone on vacation...
+# so we continue trying the rest of the files...
+            }
+        }
+
 	}
 	return 1;
 }
@@ -2285,7 +2346,7 @@ else
 
 unless (
 	purgeOldFiles(
-		getConfigValue('backupdir'), getConfigValue('keepnumfiles')
+		getConfigValue('backupdir'), getConfigValue('keepnumfiles'), getConfigValue('single')
 	)
   )
 {    # problem
